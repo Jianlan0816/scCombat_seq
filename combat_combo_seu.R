@@ -46,6 +46,7 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
   results <- list()
   raw_celltype <- seu$celltype
   
+  
   plot_and_score <- function(seu_obj, method, raw_celltype = NULL) {
     # Preprocessing
     seu_obj <- NormalizeData(seu_obj) %>% 
@@ -58,7 +59,7 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
     p1 <- DimPlot(seu_obj, group.by = "celltype")
     p2 <- DimPlot(seu_obj, group.by = "batch")
     title <- ggdraw() + draw_label(paste0(method, " UMAP"), fontface = 'bold')
-    plot_combined <- plot_grid(title, plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
+    plot_combined <- cowplot::plot_grid(title, cowplot::plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
     
     if (!is.null(save_path)) {
       save_file <- file.path(save_path, paste0(method, "_UMAP.png"))
@@ -71,41 +72,42 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
       )
     }
     
-    # Clustering and biological preservation metrics (ARI, NMI)
-    if (!is.null(raw_celltype)) {
-      pca <- Embeddings(seu_obj, reduction = "pca")
-      km <- kmeans(pca, centers = length(unique(raw_celltype)))
-      ari <- mclust::adjustedRandIndex(km$cluster, raw_celltype)
-      nmi <- aricode::NMI(km$cluster, raw_celltype)
-    } else {
-      ari <- NA
-      nmi <- NA
-    }
-    
     # Batch mixing metrics (kBET, LISI)
     meta <- seu_obj@meta.data
     emb <- Embeddings(seu_obj, reduction = "pca")
     
     # kBET
-    k0 <- round(0.05 * nrow(emb))  # Recommended: 5% of cells as neighbors
-    kbet_res <- kBET(emb, batch = meta$batch, k0 = k0, plot = FALSE)
-    kbet_acceptance <- mean(kbet_res$results$kBET.pvalue > 0.05)
+    # Safe k0 range
+    k0 <- min(max(round(0.05 * nrow(emb)), 10), 50)
+    
+    # Ensure proper batch labels
+    batch_vector <- as.factor(meta$batch)
+    
+    # Run kBET
+    kbet_res <- kBET(emb, batch = batch_vector, k0 = k0, plot = FALSE)
+    
+    # Handle potential NA
+    if (!is.null(kbet_res$results) && "kBET.pvalue.test" %in% colnames(kbet_res$results)) {
+      kbet_acceptance <- mean(kbet_res$results$kBET.pvalue.test > 0.05, na.rm = TRUE)
+    } else {
+      kbet_acceptance <- NA
+    }
     
     # LISI
-    lisi_scores <- compute_lisi(emb, meta, c("batch"))
+    lisi_scores <- compute_lisi(emb, meta, c("batch","celltype"))
     batch_lisi <- mean(lisi_scores$batch)
+    celltype_lisi <- mean(lisi_scores$celltype)
     
     return(list(
       seurat = seu_obj,
-      ARI = ari,
-      NMI = nmi,
       kBET_acceptance = kbet_acceptance,
-      batch_LISI = batch_lisi
+      batch_LISI = batch_lisi,
+      celltype_LISI = celltype_lisi
     ))
   }
   
   if (print_raw) {
-    plot_and_score(seu, "Raw")
+    results$raw = plot_and_score(seu, "Raw")
   }
   
   if (combat_seq) {
@@ -115,7 +117,10 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
   }
   
   if (combat_scseq) {
-    mod <- model.matrix(~ celltype, data = metadata)
+    if ("Covariate_cont" %in% colnames(sim@meta.data)){
+      mod <- model.matrix(~ celltype + Covariate_cont, data = metadata)}
+    else{
+      mod <- model.matrix(~ celltype, data = metadata)}
     combat_counts <- sva::ComBat_seq(as.matrix(counts), batch = as.factor(metadata$batch), covar_mod = mod)
     seu_cbsc <- CreateSeuratObject(counts = combat_counts, meta.data = metadata)
     results$combat_scseq <- plot_and_score(seu_cbsc, "combat_scseq")
@@ -123,7 +128,10 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
   
   if (combat_pcseq) {
     pcs <- seu@reductions$pca@cell.embeddings
-    mod <- model.matrix(~ celltype, data = metadata)
+    if ("Covariate_cont" %in% colnames(sim@meta.data)){
+      mod <- model.matrix(~ celltype + Covariate_cont, data = metadata)}
+    else{
+      mod <- model.matrix(~ celltype, data = metadata)}
     corrected_pcs <- sva::ComBat(dat = t(pcs), batch = metadata$batch, mod = mod)
     corrected_pcs <- t(corrected_pcs)
     
@@ -137,7 +145,7 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
     p2 <- ggplot(umap_coords, aes(x = V1, y = V2, color = batch)) +
       geom_point(size = 1) + theme_classic() + ggtitle("Batch")
     title <- ggdraw() + draw_label(paste0('combat_pcseq', " UMAP"), fontface = 'bold')
-    plot_combined <- plot_grid(title, plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
+    plot_combined <- cowplot::plot_grid(title, cowplot::plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
     
     if (!is.null(save_path)) {
       save_file <- file.path(save_path, paste0("combat_pcseq", "_UMAP.png"))
@@ -148,13 +156,6 @@ ComBat_combo <- function(seu, subset = 1.0, print_raw = FALSE,
         plot = plot_combined,   # Explicit plot object
         width = 10,
         height = 5
-      )
-    }
-    if (score_clusters) {
-      km <- kmeans(corrected_pcs, centers = length(unique(seu$celltype)))
-      results$combat_pcseq <- list(
-        ARI = adjustedRandIndex(km$cluster, seu$celltype),  # ✅ fixed
-        NMI = NMI(km$cluster, seu$celltype)
       )
     }
   }

@@ -40,7 +40,8 @@ library(lisi)
 library(kBET)
 library(ggplot2)
 
-benchmark_batch_methods <- function(seu, subset = 1.0, 
+benchmark_batch_methods <- function(seu, subset = 1.0, returnHarmony = TRUE,
+                                    returnLiger = TRUE, returnSeurat = TRUE,
                                     save_path = NULL, score_clusters = TRUE) {
   set.seed(123)
   cells_to_use <- sample(Cells(seu), size = floor(subset * length(Cells(seu))))
@@ -50,6 +51,8 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
   # 👇 Preserve cell names for clean metadata restoration later
   raw_celltype <- setNames(seu$celltype, Cells(seu))
   raw_batch <- setNames(seu$batch, Cells(seu))
+  if ("Covariate_cat" %in% colnames(seu@meta.data)){
+    raw_cat <- setNames(seu$Covariate_cat, Cells(seu))}
   
   results <- list()
   
@@ -58,21 +61,17 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
     
     # Preprocessing depending on method
     if (method %in% c("seurat5")) {
-      if (!"pca" %in% names(seu_obj@reductions)) {
-        message("Running NormalizeData, FindVariableFeatures, and ScaleData for ", method)
-        seu_obj <- NormalizeData(seu_obj)
-        seu_obj <- FindVariableFeatures(seu_obj)
-        seu_obj <- ScaleData(seu_obj)
-        seu_obj <- RunPCA(seu_obj)
-        seu_obj <- RunUMAP(seu_obj, dims = 1:20)
-      }
+      #if (!"pca" %in% names(seu_obj@reductions)) {
+      #  message("Running NormalizeData, FindVariableFeatures, and ScaleData for ", method)
+      #  seu_obj <- NormalizeData(seu_obj)
+      #  seu_obj <- FindVariableFeatures(seu_obj)
+      #  seu_obj <- ScaleData(seu_obj)
+      #  seu_obj <- RunPCA(seu_obj)
+      #  seu_obj <- RunUMAP(seu_obj, dims = 1:20)
+      #}
       reduction_name <- "umap"
     } else if (method == "liger") {
       message("Skipping NormalizeData and FindVariableFeatures for LIGER")
-      seu_obj <- NormalizeData(seu_obj)
-      seu_obj <- ScaleData(seu_obj)
-      seu_obj <- RunPCA(seu_obj)
-      seu_obj <- RunUMAP(seu_obj, dims = 1:20)
       reduction_name <- "umap"
     } else if (method == "harmony") {
       if (!"harmony" %in% names(seu_obj@reductions)) {
@@ -91,7 +90,7 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
     p1 <- DimPlot(seu_obj, reduction = reduction_name, group.by = "celltype")
     p2 <- DimPlot(seu_obj, reduction = reduction_name, group.by = "batch")
     title <- ggdraw() + draw_label(paste0(method, " UMAP"), fontface = 'bold')
-    plot_combined <- plot_grid(title, plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
+    plot_combined <- cowplot::plot_grid(title, cowplot::plot_grid(p1, p2, ncol = 2), rel_heights = c(0.1, 1), nrow = 2)
     
     if (!is.null(save_path)) {
       save_file <- file.path(save_path, paste0(method, "_UMAP.png"))
@@ -99,50 +98,63 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
       ggsave(filename = save_file, plot = plot_combined, width = 10, height = 5)
     }
     
-    # Get embeddings and metadata
-    embedding <- Embeddings(seu_obj, reduction = reduction_name)
-    metadata <- seu_obj@meta.data
+    # Batch mixing metrics (kBET, LISI)
+    meta <- seu_obj@meta.data
+    emb <- Embeddings(seu_obj, reduction = reduction_name)
+    # kBET
+    # Safe k0 range
+    k0 <- min(max(round(0.05 * nrow(emb)), 10), 50)
     
-    # --- ARI & NMI ---
-    # Create clusters if not already
-    if (!"seurat_clusters" %in% colnames(seu_obj@meta.data)) {
-      # Determine max available PCs
-      n_pcs <- ncol(Embeddings(seu_obj, reduction = "pca"))
-      dims_to_use <- 1:min(20, n_pcs)
-      
-      if (length(dims_to_use) < 1) {
-        stop("PCA reduction exists but no usable dimensions found.")
-      }
-      
-      seu_obj <- FindNeighbors(seu_obj, reduction = "pca", dims = dims_to_use)
-      seu_obj <- FindClusters(seu_obj)
+    # Ensure proper batch labels
+    batch_vector <- as.factor(meta$batch)
+    
+    # Run kBET
+    kbet_res <- kBET(emb, batch = batch_vector, k0 = k0, plot = FALSE)
+    
+    # Handle potential NA
+    if (!is.null(kbet_res$results) && "kBET.pvalue.test" %in% colnames(kbet_res$results)) {
+      kbet_acceptance <- mean(kbet_res$results$kBET.pvalue.test > 0.05, na.rm = TRUE)
+    } else {
+      kbet_acceptance <- NA
     }
     
-    ARI <- adjustedRandIndex(seu_obj$seurat_clusters, seu_obj$celltype)
-    NMI_score <- NMI(seu_obj$seurat_clusters, seu_obj$celltype)
-    # Return everything
+    # LISI
+    lisi_scores <- compute_lisi(emb, meta, c("batch","celltype"))
+    batch_lisi <- mean(lisi_scores$batch)
+    celltype_lisi <- mean(lisi_scores$celltype)
+    
     return(list(
-      seu_obj = seu_obj,
-      ARI = ARI,
-      NMI = NMI_score
+      seurat = seu_obj,
+      kBET_acceptance = kbet_acceptance,
+      batch_LISI = batch_lisi,
+      celltype_LISI = celltype_lisi
     ))
   }
   
-  
-  # ── 1. Harmony ──
-  print("-------------Harmony----------------")
-  seu_harmony <- NormalizeData(seu) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(npcs = 20)
-  seu_harmony <- RunHarmony(seu_harmony, group.by.vars = "batch")
-  seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = 1:20)
-  results$harmony <- plot_and_score(seu_harmony, "harmony")
+  if (returnHarmony){
+    # ── 1. Harmony ──
+    print("-------------Harmony----------------")
+    seu_harmony <- NormalizeData(seu) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(npcs = 20)
+    seu_harmony <- RunHarmony(seu_harmony, group.by.vars = "batch")
+    seu_harmony <- RunUMAP(seu_harmony, reduction = "harmony", dims = 1:20)
+    results$harmony <- plot_and_score(seu_harmony, "harmony")
+  }
   
   # ── 2. LIGER ──
+  if (returnLiger){
   # Split and prepare
   print("--------------Liger------------")
   
   seu_list <- SplitObject(seu, split.by = "batch")
   rawList <- lapply(seu_list, function(obj) {
     GetAssayData(obj, assay = "RNA", slot = "counts")
+  })
+  rawList <- lapply(rawList, function(mat) {
+    if (inherits(mat, "DelayedMatrix")) {
+      as.matrix(mat)
+    } else {
+      mat
+    }
   })
   # 1. Create and normalize LIGER object
   pbmcLiger <- createLiger(rawList, organism = "human") %>%
@@ -151,24 +163,24 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
     rliger::scaleNotCenter()
   
   # 2. Run integration and alignment
-  pbmcLiger <- runIntegration(pbmcLiger, k = 50)
+  pbmcLiger <- runIntegration(pbmcLiger, k = 20)
   pbmcLiger <- alignFactors(pbmcLiger, method = "centroidAlign")
-  pbmcLiger <- runUMAP(pbmcLiger)
-  
+  #pbmcLiger <- runUMAP(pbmcLiger)
   # Convert directly
   seu_liger <- ligerToSeurat(pbmcLiger)
-  print(unique(seu_liger$dataset))
+  seu_liger <- RunUMAP(seu_liger, reduction = "inmf", dims = 1:20)
+  print(seu_liger@reductions)
   # --- Restore benchmark metadata ---
   # Find overlapping cell names
   # Extract dataset (batch) assignments used as prefixes
-  batch_prefixes <- unique(seu_liger$dataset)
+  #batch_prefixes <- unique(seu_liger$dataset)
   # Escape ( and ) in batch names
-  batch_prefixes_fixed <- gsub("([\\(\\)])", "\\\\\\1", batch_prefixes)
+  #batch_prefixes_fixed <- gsub("([\\(\\)])", "\\\\\\1", batch_prefixes)
   # Now build the regex pattern
-  pattern <- paste0("^(", paste0(batch_prefixes_fixed, collapse = "|"), ")_")
-  cat("fixed pattern =", pattern, "\n")
+  #pattern <- paste0("^(", paste0(batch_prefixes_fixed, collapse = "|"), ")_")
+  #cat("fixed pattern =", pattern, "\n")
   # Apply the corrected pattern to clean cell names
-  colnames(seu_liger) <- sub(pattern, "", colnames(seu_liger))
+  #colnames(seu_liger) <- sub(pattern, "", colnames(seu_liger))
   # Check if they match now
   print(colnames(seu_liger)[1:5])
   print(names(raw_celltype)[1:5])
@@ -177,10 +189,16 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
   seu_liger <- subset(seu_liger, cells = common_cells)
   seu_liger$celltype <- raw_celltype[common_cells]
   seu_liger$batch <- raw_batch[common_cells]
+  
+  if (exists("raw_cat")){
+    seu_liger$Covariate_cat <- raw_cat[common_cells]}
+  
   print(seu_liger)
   # Then run your scoring function
   results$liger <- plot_and_score(seu_liger, "liger")
+  }
   
+  if (returnSeurat){
   # ── 3. Seurat v5 Integration ──
   # Split object by batch
   seu_list <- SplitObject(seu, split.by = "batch")
@@ -236,6 +254,6 @@ benchmark_batch_methods <- function(seu, subset = 1.0,
   seu_integrated <- RunUMAP(seu_integrated, dims = 1:10)
   
   results$seurat5 <- plot_and_score(seu_integrated, "seurat5")
-  
+  }
   return(results)
 }

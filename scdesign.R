@@ -29,12 +29,12 @@ print(example_sce)
 # ------------- simulate a new data with batch effect information ----------------
 set.seed(123)
 simu_res <- scdesign3(sce = example_sce, 
-                      assay_use = "counts", 
-                      celltype = "cell_type", 
+                      assay_use = "TPM", 
+                      celltype = "celltype", 
                       pseudotime = NULL, 
                       spatial = NULL, 
                       other_covariates = c("batch"), 
-                      mu_formula = "cell_type + batch", 
+                      mu_formula = "celltype + batch", 
                       sigma_formula = "1", 
                       family_use = "nb", 
                       n_cores = 2, 
@@ -50,6 +50,8 @@ simu_sce <- SingleCellExperiment(list(counts = simu_res$new_count), colData = BA
 logcounts(simu_sce) <- log1p(counts(simu_sce))
 
 simu_seurat <- CreateSeuratObject(counts = counts(simu_sce), meta.data = as.data.frame(BATCH_data$newCovariate))
+check_data_characteristics(simu_seurat)
+
 simu_seurat <- NormalizeData(simu_seurat)
 simu_seurat <- FindVariableFeatures(simu_seurat)
 simu_seurat <- ScaleData(simu_seurat)
@@ -61,8 +63,8 @@ simu_seurat <- RunUMAP(simu_seurat, dims = 1:20)
 # After constructing BATCH_data
 BATCH_data <- construct_data(
   sce = example_sce,
-  assay_use = "counts",
-  celltype = "cell_type",
+  assay_use = "TPM",
+  celltype = "celltype",
   pseudotime = NULL,
   spatial = NULL,
   other_covariates = c("batch"),
