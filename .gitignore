@@ -1,0 +1,5 @@
+results/
+*.rds
+.Rhistory
+*.tiff
+*.png

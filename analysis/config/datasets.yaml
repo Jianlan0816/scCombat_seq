@@ -1,0 +1,137 @@
+# scComBat-Seq Dataset Registry
+# Each entry describes one real-data experiment.
+# Paths are relative to the project root (use here::here() to resolve).
+# run_combat_variants.R reads this file to parametrise the analysis.
+
+datasets:
+
+  - id: dataset1
+    name: "Dendritic cells (UC3)"
+    biology: human_DC
+    data_format: single_matrix        # one counts file + one sample metadata file
+    counts_file: Data/dataset1/dataset1_sm_uc3.txt
+    sample_file:  Data/dataset1/sample_sm_uc3.txt
+    celltype_col: celltype
+    batch_col: batch
+    filter_cells: true
+    min_genes: 300
+    filter_genes: true
+    min_cells: 10
+    input_type: raw_counts            # raw_counts → ComBat-Seq; log_normalized → ComBat
+    pca_dims: 20
+    notes: "Has patient covariate; includes pDC and DoubleNeg subtypes"
+
+  - id: dataset2
+    name: "Cell Atlas (SeqWell + 10x)"
+    biology: human_mixed
+    data_format: single_matrix
+    counts_file: Data/dataset2/filtered_total_batch1_seqwell_batch2_10x.txt
+    sample_file:  Data/dataset2/filtered_total_sample_ext_organ_celltype_batch.txt
+    celltype_col: ct                  # dataset-specific column name
+    batch_col: batchlb
+    filter_cells: false
+    filter_genes: false
+    input_type: raw_counts
+    pca_dims: 20
+
+  - id: dataset4
+    name: "Pancreatic islets (5 batches)"
+    biology: human_pancreas
+    data_format: single_matrix
+    counts_file: Data/dataset4/myData_pancreatic_5batches.txt
+    sample_file:  Data/dataset4/mySample_pancreatic_5batches.txt
+    celltype_col: celltype
+    batch_col: batchlb
+    filter_cells: true
+    min_genes: 200
+    filter_genes: true
+    min_cells: 10
+    input_type: raw_counts
+    pca_dims: 20
+
+  - id: dataset5
+    name: "PBMC (2 batches)"
+    biology: human_PBMC
+    data_format: split_batches        # separate count files per batch
+    batch1_counts: Data/dataset5/b1_exprs.txt
+    batch2_counts: Data/dataset5/b2_exprs.txt
+    batch1_meta:   Data/dataset5/b1_celltype.txt
+    batch2_meta:   Data/dataset5/b2_celltype.txt
+    celltype_col: CellType
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: raw_counts
+    pca_dims: 20
+
+  - id: dataset6
+    name: "Cell lines"
+    biology: cell_line
+    data_format: split_batches
+    batch1_counts: Data/dataset6/b1_exprs.txt
+    batch2_counts: Data/dataset6/b2_exprs.txt
+    batch1_meta:   Data/dataset6/b1_celltype.txt
+    batch2_meta:   Data/dataset6/b2_celltype.txt
+    celltype_col: CellType
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: raw_counts
+    pca_dims: 20
+
+  - id: dataset7
+    name: "Mouse retina"
+    biology: mouse_retina
+    data_format: split_batches
+    batch1_counts: Data/dataset7/b1_exprs.txt
+    batch2_counts: Data/dataset7/b2_exprs.txt
+    batch1_meta:   Data/dataset7/b1_celltype.txt
+    batch2_meta:   Data/dataset7/b2_celltype.txt
+    celltype_col: CellType
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: raw_counts
+    pca_dims: 20
+
+  - id: dataset8
+    name: "Mouse brain (DropViz + snRNA-seq)"
+    biology: mouse_brain
+    data_format: rds
+    counts_file: Data/dataset8/dropviz_and_nuclei_combined_filtered_UMI.RDS
+    sample_file:  Data/dataset8/dropviz_and_nuclei_combined_filtered_cell_info.txt
+    celltype_col: cell_type
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: log_normalized        # pre-log data → ComBat (not ComBat-Seq)
+    pca_dims: 20
+    notes: "Large dataset; use subset < 1.0 for dev runs"
+
+  - id: dataset9
+    name: "Human Cell Atlas"
+    biology: human_mixed
+    data_format: rds
+    counts_file: Data/dataset9/hca_counts.RDS
+    sample_file:  Data/dataset9/hca_meta.txt
+    celltype_col: celltype
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: log_normalized
+    pca_dims: 20
+
+  - id: dataset10
+    name: "Hematopoietic stem cells"
+    biology: human_HSC
+    data_format: split_batches
+    batch1_counts: Data/dataset10/b1_exprs.txt
+    batch2_counts: Data/dataset10/b2_exprs.txt
+    batch1_meta:   Data/dataset10/b1_celltype.txt
+    batch2_meta:   Data/dataset10/b2_celltype.txt
+    celltype_col: CellType
+    batch_col: batch
+    filter_cells: false
+    filter_genes: false
+    input_type: raw_counts
+    pca_dims: 20
