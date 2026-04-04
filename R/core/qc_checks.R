@@ -50,14 +50,35 @@ check_data_characteristics <- function(seu_obj,
   if (has_cov)      message("[OK] Covariate column '", covariate_col, "' found.")
 
   if (has_celltype && has_batch) {
-    ct_batch <- table(meta[[celltype_col]], meta[[batch_col]])
+    ct_batch  <- table(meta[[celltype_col]], meta[[batch_col]])
+    n_batches <- ncol(ct_batch)
     message("\n[i] Cell type × batch distribution:")
     print(ct_batch)
-    if (any(ct_batch == 0)) {
-      message("[!]  Imbalance detected: some cell types absent in certain batches.")
-      message("     Consider combat_ind (per-celltype) or combat_pcseq.")
+
+    # Cramér's V: 0 = no confounding, 1 = perfect confounding
+    chi2      <- suppressWarnings(chisq.test(ct_batch)$statistic)
+    n_total   <- sum(ct_batch)
+    k         <- min(nrow(ct_batch), n_batches)
+    cramers_v <- as.numeric(sqrt(chi2 / (n_total * (k - 1))))
+    message(sprintf("[i]  Cramér's V (batch×celltype confounding): %.3f  %s",
+                    cramers_v,
+                    ifelse(cramers_v > 0.5,
+                           "<-- HIGH: celltype covariate likely to hurt",
+                    ifelse(cramers_v > 0.2,
+                           "<-- MODERATE: use with caution",
+                           "<-- LOW: safe to use celltype covariate"))))
+
+    # Per-celltype batch coverage (>= 5 cells to count as represented)
+    min_cells_thresh <- 5
+    ct_coverage  <- rowSums(ct_batch >= min_cells_thresh)
+    confounded   <- names(ct_coverage[ct_coverage < n_batches])
+    if (length(confounded) > 0) {
+      message("[!]  Confounded celltypes (absent/sparse in >=1 batch): ",
+              paste(confounded, collapse = ", "))
+      message("     --> Recommended: use combat_scseq with adaptive covariate",
+              " (min_batch_coverage param) or combat_seq / combat_pcseq.")
     } else {
-      message("[OK] All cell types represented in every batch.")
+      message("[OK] All cell types sufficiently represented in every batch.")
     }
   }
 

@@ -13,6 +13,11 @@
 #' @param combat_ind  Apply ComBat-Seq per celltype then merge
 #' @param save_path   Directory for UMAP PNGs, or NULL to skip
 #' @param score_clusters Logical; compute kBET and LISI (default TRUE)
+#' @param min_batch_coverage Minimum number of batches a celltype must appear in
+#'   (with >= min_cells_per_ct_batch cells) to be included in the covariate model.
+#'   Default = all batches (full coverage required). Set lower to allow partial coverage.
+#' @param min_cells_per_ct_batch Minimum cells a celltype needs in a batch to count
+#'   as "represented" in that batch (default = 5).
 #' @return Named list; each element has: seurat, kBET_acceptance, batch_LISI, celltype_LISI
 
 library(Seurat)
@@ -25,14 +30,17 @@ library(cowplot)
 # evaluation.R must be sourced before this file (via run_all.R or run_combat_variants.R)
 
 ComBat_combo <- function(seu,
-                         subset        = 1.0,
-                         print_raw     = FALSE,
-                         combat_seq    = FALSE,
-                         combat_scseq  = FALSE,
-                         combat_pcseq  = FALSE,
-                         combat_ind    = FALSE,
-                         save_path     = NULL,
-                         score_clusters = TRUE) {
+                         subset                = 1.0,
+                         print_raw             = FALSE,
+                         combat_seq            = FALSE,
+                         combat_scseq          = FALSE,
+                         combat_pcseq          = FALSE,
+                         combat_ind            = FALSE,
+                         save_path             = NULL,
+                         score_clusters        = TRUE,
+                         min_batch_coverage     = NULL,   # default: all batches required
+                         min_cells_per_ct_batch = 5,
+                         use_adaptive_covariate = TRUE) {
 
   set.seed(123)
   if (subset < 1.0) {
@@ -45,13 +53,81 @@ ComBat_combo <- function(seu,
   metadata$celltype <- as.factor(metadata$celltype)
   results  <- list()
 
-  # ── Helper: build covariate model matrix ─────────────────────────────────
-  make_mod <- function(meta) {
-    if ("Covariate_cont" %in% colnames(meta)) {
-      model.matrix(~ celltype + Covariate_cont, data = meta)
-    } else {
-      model.matrix(~ celltype, data = meta)
+  n_batches <- length(unique(metadata$batch))
+  if (is.null(min_batch_coverage)) min_batch_coverage <- n_batches
+
+  # When adaptive covariate is disabled, always include all celltypes
+  if (!use_adaptive_covariate) {
+    get_usable_celltypes <- function(meta) {
+      list(usable = levels(meta$celltype), dropped = character(0))
     }
+  }
+
+  # ── Helper: identify which celltypes are safe to use as covariates ────────
+  get_usable_celltypes <- function(meta) {
+    ct_batch_counts <- table(meta$celltype, meta$batch)
+    # A celltype is "covered" in a batch if it has >= min_cells_per_ct_batch cells
+    ct_covered_batches <- rowSums(ct_batch_counts >= min_cells_per_ct_batch)
+    usable <- names(ct_covered_batches[ct_covered_batches >= min_batch_coverage])
+    dropped <- setdiff(levels(meta$celltype), usable)
+    if (length(dropped) > 0) {
+      message(sprintf(
+        "[!] Adaptive covariate: dropping %d confounded celltype(s) from model: %s",
+        length(dropped), paste(dropped, collapse = ", ")
+      ))
+      message(sprintf(
+        "    (present in < %d/%d batches with >= %d cells)",
+        min_batch_coverage, n_batches, min_cells_per_ct_batch
+      ))
+    } else {
+      message("[OK] All celltypes sufficiently represented across batches.")
+    }
+    list(usable = usable, dropped = dropped)
+  }
+
+  # ── Helper: build adaptive covariate model matrix ─────────────────────────
+  # For balanced celltypes: full celltype model (biology is protected).
+  # For confounded celltypes: intercept-only rows (batch effect estimated from
+  # balanced types is applied, but no celltype term — we can't separate
+  # batch from biology for these types anyway).
+  make_mod <- function(meta) {
+    # If adaptive covariate is disabled, use standard full model immediately
+    if (!use_adaptive_covariate) {
+      if ("Covariate_cont" %in% colnames(meta)) {
+        return(model.matrix(~ celltype + Covariate_cont, data = meta))
+      } else {
+        return(model.matrix(~ celltype, data = meta))
+      }
+    }
+
+    ct_info <- get_usable_celltypes(meta)
+
+    if (length(ct_info$dropped) == 0) {
+      # All celltypes balanced — use standard full model
+      if ("Covariate_cont" %in% colnames(meta)) {
+        return(model.matrix(~ celltype + Covariate_cont, data = meta))
+      } else {
+        return(model.matrix(~ celltype, data = meta))
+      }
+    }
+
+    # Build model matrix using only the balanced celltypes
+    meta_usable <- meta[meta$celltype %in% ct_info$usable, , drop = FALSE]
+    meta_usable$celltype <- droplevels(as.factor(meta_usable$celltype))
+    if ("Covariate_cont" %in% colnames(meta_usable)) {
+      mod_usable <- model.matrix(~ celltype + Covariate_cont, data = meta_usable)
+    } else {
+      mod_usable <- model.matrix(~ celltype, data = meta_usable)
+    }
+
+    # Full model matrix for all cells: intercept-only for confounded types
+    mod_full <- matrix(0, nrow = nrow(meta), ncol = ncol(mod_usable))
+    rownames(mod_full) <- rownames(meta)
+    colnames(mod_full) <- colnames(mod_usable)
+    mod_full[, "(Intercept)"] <- 1                          # intercept for everyone
+    mod_full[rownames(meta_usable), ] <- mod_usable         # full model for balanced types
+
+    return(mod_full)
   }
 
   # ── Raw baseline ──────────────────────────────────────────────────────────
@@ -70,10 +146,56 @@ ComBat_combo <- function(seu,
 
   # ── Variant 2: ComBat-Seq, batch + celltype (+ optional covariate) ───────
   if (combat_scseq) {
-    mod      <- make_mod(metadata)
-    corrected <- sva::ComBat_seq(as.matrix(counts),
-                                 batch     = as.factor(metadata$batch),
-                                 covar_mod = mod)
+    if (!use_adaptive_covariate) {
+      # Standard: one ComBat_seq call with all celltypes in covariate
+      mod       <- make_mod(metadata)
+      corrected <- sva::ComBat_seq(as.matrix(counts),
+                                   batch     = as.factor(metadata$batch),
+                                   covar_mod = mod)
+    } else {
+      # Adaptive (Option A): two-stage correction
+      #   Balanced celltypes → ComBat_seq with celltype covariate
+      #   Confounded celltypes → ComBat_seq with batch only (can't protect biology)
+      ct_info <- get_usable_celltypes(metadata)
+
+      if (length(ct_info$dropped) == 0) {
+        # All balanced — identical to standard
+        mod       <- model.matrix(~ celltype, data = metadata)
+        corrected <- sva::ComBat_seq(as.matrix(counts),
+                                     batch     = as.factor(metadata$batch),
+                                     covar_mod = mod)
+      } else {
+        # Stage 1: correct balanced celltypes with celltype covariate
+        idx_bal   <- metadata$celltype %in% ct_info$usable
+        meta_bal  <- metadata[idx_bal, , drop = FALSE]
+        meta_bal$celltype <- droplevels(as.factor(meta_bal$celltype))
+        mod_bal   <- if ("Covariate_cont" %in% colnames(meta_bal))
+                       model.matrix(~ celltype + Covariate_cont, data = meta_bal)
+                     else
+                       model.matrix(~ celltype, data = meta_bal)
+        corr_bal  <- sva::ComBat_seq(as.matrix(counts[, idx_bal]),
+                                     batch     = as.factor(meta_bal$batch),
+                                     covar_mod = mod_bal)
+
+        # Stage 2: correct confounded celltypes with batch only
+        idx_conf  <- !idx_bal
+        meta_conf <- metadata[idx_conf, , drop = FALSE]
+        if (length(unique(meta_conf$batch)) > 1) {
+          corr_conf <- sva::ComBat_seq(as.matrix(counts[, idx_conf]),
+                                       batch = as.factor(meta_conf$batch))
+        } else {
+          message("    Confounded celltypes are single-batch; leaving uncorrected.")
+          corr_conf <- as.matrix(counts[, idx_conf])
+        }
+
+        # Merge back into original cell order
+        corrected <- matrix(0, nrow = nrow(counts), ncol = ncol(counts),
+                            dimnames = dimnames(counts))
+        corrected[, idx_bal]  <- corr_bal
+        corrected[, idx_conf] <- corr_conf
+      }
+    }
+
     seu_cbsc <- CreateSeuratObject(counts = corrected, meta.data = metadata)
     results$combat_scseq <- score_and_plot(seu_cbsc, "combat_scseq",
                                             preprocess = TRUE, save_path = save_path)
