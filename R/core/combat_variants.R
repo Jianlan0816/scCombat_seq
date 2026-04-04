@@ -22,7 +22,7 @@ library(dplyr)
 library(ggplot2)
 library(cowplot)
 
-source(file.path(dirname(sys.frame(1)$ofile), "evaluation.R"))
+# evaluation.R must be sourced before this file (via run_all.R or run_combat_variants.R)
 
 ComBat_combo <- function(seu,
                          subset        = 1.0,

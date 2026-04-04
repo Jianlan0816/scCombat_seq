@@ -101,6 +101,7 @@ assemble_figure <- function(results_list,
   # Build shared legends from first valid object
   seu_ex   <- valid[[1]]$seurat
   umap_df  <- as.data.frame(Embeddings(seu_ex, "umap"))
+  colnames(umap_df)[1:2] <- c("umap_1", "umap_2")
   umap_df$celltype <- seu_ex$celltype
   umap_df$batch    <- seu_ex$batch
 
@@ -109,10 +110,10 @@ assemble_figure <- function(results_list,
   ct_cols      <- setNames(brewer.pal(min(max(3, length(ct_levels)), 8),    "Set2"),  ct_levels)
   batch_cols   <- setNames(brewer.pal(min(max(3, length(batch_levels)), 8), "Dark2"), batch_levels)
 
-  leg_ct    <- get_legend(ggplot(umap_df, aes(UMAP_1, UMAP_2, color = celltype)) +
+  leg_ct    <- get_legend(ggplot(umap_df, aes(umap_1, umap_2, color = celltype)) +
                             geom_point() + scale_color_manual(values = ct_cols) +
                             theme_void() + theme(legend.position = "right"))
-  leg_batch <- get_legend(ggplot(umap_df, aes(UMAP_1, UMAP_2, color = batch)) +
+  leg_batch <- get_legend(ggplot(umap_df, aes(umap_1, umap_2, color = batch)) +
                             geom_point() + scale_color_manual(values = batch_cols) +
                             theme_void() + theme(legend.position = "right"))
 
@@ -122,7 +123,7 @@ assemble_figure <- function(results_list,
     umap_df$cat <- seu_ex$Covariate_cat
     cat_levels  <- unique(umap_df$cat)
     cat_cols    <- setNames(brewer.pal(min(max(3, length(cat_levels)), 8), "Set1"), cat_levels)
-    leg_cat     <- get_legend(ggplot(umap_df, aes(UMAP_1, UMAP_2, color = cat)) +
+    leg_cat     <- get_legend(ggplot(umap_df, aes(umap_1, umap_2, color = cat)) +
                                 geom_point() + scale_color_manual(values = cat_cols) +
                                 theme_void() + theme(legend.position = "right"))
     leg_panels  <- c(leg_panels, list(leg_cat))

@@ -205,8 +205,8 @@ run_dataset_analysis <- function(dataset_id,
 # ── NULL-coalescing operator ───────────────────────────────────────────────
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-# ── Command-line interface ────────────────────────────────────────────────────
-if (!interactive()) {
+# ── Command-line interface (only when run directly, not sourced) ──────────────
+if (!interactive() && sys.nframe() == 0) {
   args <- commandArgs(trailingOnly = TRUE)
   ds   <- grep("^--dataset",  args, value = TRUE)
   sub  <- grep("^--subset",   args, value = TRUE)
